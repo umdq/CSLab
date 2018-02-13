@@ -73,5 +73,213 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
 	boid.pos += boid.rot * boid.speed * gDeltaTime;
 
+	//本该在写之前sync，然而只提供了groupshared data的同步等待，看来用两张buffer才是正统啊
 	gBoidBuffer[id.x] = boid;
 }
+
+
+
+
+//--------------------------------------------------------------------------------------
+// Grid Optimization
+//--------------------------------------------------------------------------------------
+#pragma kernel CalCenterCS
+#pragma kernel BuildGridCS
+#pragma kernel ClearGridIndicesCS
+#pragma kernel BuildGridIndicesCS
+#pragma kernel RearrangeParticlesCS
+#pragma kernel BoidsCS_Grid
+
+RWStructuredBuffer<Boid> BoidRW;
+StructuredBuffer<Boid> BoidRO;
+
+//xy分别表示排序时依据的key和所绑定的thread（本体引用）
+RWStructuredBuffer<uint2> GridRW;
+StructuredBuffer<uint2> GridRO;
+
+//xy分别表示一个cell的首尾
+RWStructuredBuffer<uint2> GridIndicesRW;
+StructuredBuffer<uint2> GridIndicesRO;
+
+RWStructuredBuffer<float3> BoidsCenterRW;//只有一个元素，专门dispatch一次…毕竟全局变量只能传过来读，相对所有thread都是const的
+//--------------------------------------------------------------------------------------
+// calculate the current center of boids before update,as grid center
+//--------------------------------------------------------------------------------------
+
+[numthreads(1, 1, 1)]
+void CalCenterCS( uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint GI : SV_GroupIndex )
+{
+	float3 sumPos=float3(0,0,0);
+	for(uint i=0;i < gBoidsCount; i++)
+	{
+		sumPos+=BoidRO[i].pos;
+	}
+    BoidsCenterRW[DTid.x] = sumPos/gBoidsCount;
+}
+
+//--------------------------------------------------------------------------------------
+// Build Grid
+//--------------------------------------------------------------------------------------
+
+float3 GridCalculateCell(float3 position)
+{
+	//w2l
+	//position=position-gFlockPos.xyz;
+	//不断运动过程中gFlockPos根本不是群中心而是目标，甩开群首的距离随速度差而变化
+	//所以遍历时应该顺便算出当前平均位置存起来作为群中心
+	//——》并行互斥，并不能顺便求啊……——》单独dispatch一次，只有一个thread，down sample就免了吧…
+	position=position- BoidsCenterRW[0];
+    return clamp(position/gNearByDist + float3(128, 128,128), float3(0, 0,0), float3(255, 255,255));
+}
+
+//key means what to get hash address,i.e. cell index,it's also used as the compare key.
+unsigned int GridConstuctKey(uint3 cellIndex)
+{
+    // Bit pack [-----UNUSED-----][----z---][----Y---][----X---]
+    //                			8-bit     			8bit         8-bit     8-bit
+   // return (cellIndex.x&(cellIndex.y<<8))&(cellIndex.z<<16);
+   return dot(cellIndex.zyx,uint3(256*256, 256, 1));
+}
+
+uint2 GridConstuctKeyValuePair(uint3 cellIndex, uint value)
+{
+    return uint2(dot(cellIndex.zyx,uint3(256*256, 256, 1)),
+    					value);
+}
+
+
+//--------------------------------------------------------------------------------------
+// Build Grid
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridCS( uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint GI : SV_GroupIndex )
+{
+	const unsigned int P_ID = DTid.x; // Particle ID to operate on
+    float3 grid_xyz= GridCalculateCell(BoidRO[P_ID].pos );
+    GridRW[P_ID] = GridConstuctKeyValuePair((uint3)grid_xyz, P_ID);
+}
+
+
+//after bitonic sort
+//--------------------------------------------------------------------------------------
+// Build Grid Indices
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ClearGridIndicesCS( uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint GI : SV_GroupIndex )
+{
+    GridIndicesRW[DTid.x] = uint2(0, 0);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridIndicesCS( uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint GI : SV_GroupIndex )
+{
+    const unsigned int G_ID = DTid.x; // Grid ID to operate on
+    unsigned int G_ID_PREV = (G_ID == 0)? gBoidsCount : G_ID; G_ID_PREV--;
+    unsigned int G_ID_NEXT = (G_ID + 1)%gBoidsCount;
+
+    //get cell index
+    unsigned int cell = GridRO[G_ID].x;
+    unsigned int cell_prev =GridRO[G_ID_PREV].x;
+    unsigned int cell_next =GridRO[G_ID_NEXT].x;
+
+    if (cell != cell_prev)
+    {
+        // I'm the start of a cell
+        GridIndicesRW[cell].x = G_ID;
+    }
+    if (cell != cell_next)
+    {
+        // I'm the end of a cell
+        GridIndicesRW[cell].y = G_ID + 1;
+    }
+
+    /*
+    //debug
+    //GridIndicesRW[cell].x=1;
+    //GridIndicesRW[cell].y=2;//没卵用，gridIndices还是全为0
+    GridIndicesRW[G_ID].x=G_ID;
+    GridIndicesRW[G_ID].y=25;
+    */
+}
+
+
+//--------------------------------------------------------------------------------------
+// Rearrange entity elements
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void RearrangeParticlesCS( uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint GI : SV_GroupIndex )
+{
+     const unsigned int ID = DTid.x;
+     BoidRW[ID] =  BoidRO[ GridRO[ ID ].y ];
+}
+
+
+//--------------------------------------------------------------------------------------
+// Simulation!
+//--------------------------------------------------------------------------------------
+[numthreads(SIMULATION_BLOCK_SIZE,1,1)]
+void BoidsCS_Grid (uint3 id : SV_DispatchThreadID)
+{
+	Boid boid = BoidRO[id.x];
+
+	float3 pos = boid.pos;
+	float3 rot = boid.rot;
+
+	//separation
+	float3 separation = float3(0.0, 0.0, 0.0);
+
+	//alignment
+	float3 alignment = float3(0.0, 0.0, 0.0);
+
+	//cohesion
+	float3 cohesion=gFlockPos.xyz;
+	float3 tempCohesion = float3(0.0, 0.0, 0.0);
+
+    float tempSpeed = 0;
+	uint nearbyCount = 0;
+
+	// Calculate the density based on neighbors from the 26 adjacent cells + current cell
+    int3 G_XYZ = (int3)GridCalculateCell( pos );
+    for (int Z = max(G_XYZ.z - 1, 0) ; Z <= min(G_XYZ.z + 1, 255) ; Z++)
+    for (int Y = max(G_XYZ.y - 1, 0) ; Y <= min(G_XYZ.y + 1, 255) ; Y++)
+    for (int X = max(G_XYZ.x - 1, 0) ; X <= min(G_XYZ.x + 1, 255) ; X++)
+    {
+    	unsigned int G_CELL = GridConstuctKey(uint3(X, Y,Z));
+        uint2 G_START_END = GridIndicesRO[G_CELL];
+        for (unsigned int N_ID = G_START_END.x ; N_ID < G_START_END.y ; N_ID++)
+       	{
+       		if (N_ID != uint(id.x))
+			{
+				Boid tempBoid = BoidRO[N_ID];
+				if (length(boid.pos - tempBoid.pos) < gNearByDist)
+				{
+					separation += boid.pos - tempBoid.pos;
+					alignment += tempBoid.rot;
+					tempCohesion += tempBoid.pos;
+					nearbyCount++;
+				}
+			}
+        }
+
+	}
+
+	if (nearbyCount > 0)
+	{
+		alignment *= 1 / nearbyCount;
+		tempCohesion *= 1 / nearbyCount;
+	}
+
+    cohesion += tempCohesion;
+
+	float3 direction = alignment + separation + normalize(cohesion - boid.pos);
+
+	boid.rot = lerp(boid.rot, normalize(direction), gDeltaTime * boid.rotSpeed);
+
+	boid.pos += boid.rot * boid.speed * gDeltaTime;
+
+	BoidRW[id.x] = boid;
+}
+

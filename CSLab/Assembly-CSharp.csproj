@@ -46,14 +46,20 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+     <Compile Include="Assets\BitonicSort\BitonicSorter.cs" />
+     <Compile Include="Assets\BitonicSort\GenerateMassiveRandomInt.cs" />
+     <Compile Include="Assets\Boids\scripts\BitonicSorter2.cs" />
      <Compile Include="Assets\Boids\scripts\CPUFlock.cs" />
      <Compile Include="Assets\Boids\scripts\GPUFlock_copy.cs" />
      <Compile Include="Assets\Boids\scripts\GPUFlock_middle.cs" />
+     <Compile Include="Assets\Boids\scripts\GPUFlock_middle_plus.cs" />
      <Compile Include="Assets\Boids\scripts\GPUFlock_ultimate.cs" />
      <Compile Include="Assets\Boids\scripts\ShowFPS.cs" />
      <None Include="Assets\Boids\materials\rendercpuboid.shader" />
+     <None Include="Assets\BitonicSort\cssort.compute" />
      <None Include="Assets\Boids\materials\HelpQuaternion.cginc" />
      <None Include="Assets\Boids\materials\rendergpuboid.shader" />
+     <None Include="Assets\Boids\materials\cssort2.compute" />
      <None Include="Assets\Boids\materials\boidscs.compute" />
  <Reference Include="UnityEngine.UI">
  <HintPath>E:/Program Files/Unity3D/Editor/Data/UnityExtensions/Unity/GUISystem/UnityEngine.UI.dll</HintPath>
