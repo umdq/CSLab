@@ -5,9 +5,9 @@ my lab for compute shader:
 * Interactive water surface simulation(to be added-.-)
 * Fluid body simulation(to be added...)
 ## GPU Sort
-i.e. **bitonic sort,gpu friendly.**  
-When it runS just by cpu,the time complexity is O(n*logn*logn).
-However,if it's accelerated by gpu,because of the parallel computation,the time complexity can be saved to O(logn*logn)!  
+i.e. **bitonic sort,GPU friendly.**  
+When it runs just by cpu,the time complexity is O(n*logn*logn).
+However,if it's accelerated by gpu,owing to the parallel computation,the time complexity can be saved to O(logn*logn)!  
   
 ![](https://github.com/EagerCleaverInWind/CSLab/blob/master/CSLab/20171106202552.png)
   
