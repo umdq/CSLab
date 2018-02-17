@@ -1,6 +1,6 @@
 # CSLab
 my lab for compute shader:
-* Gpu sort
+* GPU sort
 * Boids simulation
 * Interactive water surface simulation(to be added-.-)
 * Fluid body simulation(to be added...)
